@@ -207,6 +207,7 @@ class CaptureAgent(Agent):
             return game_state.get_blue_food()
 
     def get_capsules(self, game_state):
+        print("aaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         if self.red:
             return game_state.get_blue_capsules()
         else:

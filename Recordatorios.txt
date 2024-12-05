@@ -1,0 +1,10 @@
+El ambiente virtual se llama PacManEnv2
+Para crearlo virtualenv -p python3.8 PacManEnv2 
+Para activarlo se usa PacManEnv2\Scripts\activate en la carpeta PACMAN-AGENT
+
+Para echarle a andar básico: 
+    python capture.py -r baseline team -b baseline team
+
+Para que funcione con tu agente: 
+    1.- Estar en carpeta Pacman-Contest\pacman-agent\pacman-contest\src\contest
+    2.- python capture.py -r baseline team -b ../../../my team.py
