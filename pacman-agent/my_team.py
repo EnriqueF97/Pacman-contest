@@ -261,169 +261,131 @@ class OffensiveAStarAgent(CaptureAgent):
         # No path found
         return []
 
-
 class DefensiveAStarAgent(CaptureAgent):
     """
     Defensive A* Agent:
-    This agent uses A* to move defensively. Its behavior:
-    - If an enemy Pacman (invader) is visible, it tries to chase them down.
-    - If the only visible enemy is a scared ghost, it runs away from it.
-    - If no enemies are visible, it positions itself strategically (e.g., near its start or a patrol point).
+    - If scared: run back to start.
+    - If invaders appear: chase closest invader.
+    - Else: patrol a chosen midpoint location.
+    Uses A* to reach these goals efficiently.
     """
-
     def __init__(self, index, time_for_computing=0.1):
         super().__init__(index, time_for_computing)
         self.start_position = None
+        self.mid_x = None
+        self.is_red = None
+        self.patrol_point = None
 
     def register_initial_state(self, game_state):
-        """
-        Called before the game starts, sets the agent's initial position.
-        """
+        # Initialize positions and determine patrol point near the map's center.
         self.start_position = game_state.get_agent_position(self.index)
         super().register_initial_state(game_state)
+        layout = game_state.data.layout
+        w, h = layout.width, layout.height
+        self.is_red = game_state.is_on_red_team(self.index)
+        self.mid_x = w // 2
+        points = []
+        # Attempt to find a valid patrol spot along the middle boundary.
+        for y in range(h):
+            if not game_state.has_wall(self.mid_x - (0 if self.is_red else 1), y):
+                px = self.mid_x - 1 if self.is_red else self.mid_x
+                points.append((px, y))
+        self.patrol_point = points[len(points)//2] if points else self.start_position
+
+    def get_current_position(self, game_state):
+        return game_state.get_agent_state(self.index).get_position()
+
+    def is_on_our_side(self, pos):
+        # Determine if a position is on our team's side based on the mid line.
+        return pos[0] < self.mid_x if self.is_red else pos[0] >= self.mid_x
 
     def get_visible_invaders(self, game_state):
-        """
-        Returns a list of (opponent_index, position) for visible enemies that are Pacman (invaders).
-        """
+        # Visible enemy Pacmen on our side.
         invaders = []
-        for opp_index in self.get_opponents(game_state):
-            opp_state = game_state.get_agent_state(opp_index)
-            if opp_state.is_pacman and opp_state.get_position() is not None:
-                invaders.append((opp_index, opp_state.get_position()))
+        for o in self.get_opponents(game_state):
+            st = game_state.get_agent_state(o)
+            if st.is_pacman and st.get_position() and self.is_on_our_side(st.get_position()):
+                invaders.append((o, st.get_position()))
         return invaders
 
-    def get_visible_scared_ghosts(self, game_state):
-        """
-        Returns a list of (opponent_index, position, scared_timer) for visible scared enemy ghosts.
-        """
-        scared_ghosts = []
-        for opp_index in self.get_opponents(game_state):
-            opp_state = game_state.get_agent_state(opp_index)
-            if not opp_state.is_pacman and opp_state.scared_timer > 0:
-                pos = opp_state.get_position()
-                if pos is not None:
-                    scared_ghosts.append(
-                        (opp_index, pos, opp_state.scared_timer))
-        return scared_ghosts
-
     def get_closest_enemy_distance(self, game_state):
-        """
-        Compute the shortest known distance from this agent to any enemy.
-        If unknown, return a large number.
-        """
+        # Compute shortest visible enemy distance or fallback to 100.
         distancer = Distancer(game_state.data.layout)
-        my_pos = game_state.get_agent_state(self.index).get_position()
-        distances = []
-        for opp_index in self.get_opponents(game_state):
-            enemy_pos = game_state.get_agent_position(opp_index)
-            if enemy_pos is None:
-                distances.append(100)
-            else:
-                distances.append(distancer.get_distance(enemy_pos, my_pos))
-        return min(distances) if distances else 100
+        my_pos = self.get_current_position(game_state)
+        dists = []
+        for o in self.get_opponents(game_state):
+            epos = game_state.get_agent_position(o)
+            dists.append(100 if epos is None else distancer.get_distance(epos, my_pos))
+        return min(dists) if dists else 100
+
+    def get_closest_enemy_position(self, game_state):
+        # Return position of the closest visible enemy, else None.
+        distancer = Distancer(game_state.data.layout)
+        my_pos = self.get_current_position(game_state)
+        visible = []
+        for o in self.get_opponents(game_state):
+            epos = game_state.get_agent_position(o)
+            if epos:
+                visible.append(epos)
+        return min(visible, key=lambda p: distancer.get_distance(p, my_pos)) if visible else None
+
+    def is_scared(self, game_state):
+        # Check if this agent is currently a scared ghost.
+        st = game_state.get_agent_state(self.index)
+        return st.scared_timer > 0 and not st.is_pacman
 
     def select_goal(self, game_state):
-        """
-        Determine the appropriate defensive goal:
-        - If there's at least one visible invader, chase the closest one.
-        - Otherwise, if there's a visible scared ghost, run away from it by choosing a safe spot.
-        - If no threats are visible, stay near start or pick a patrol location.
-        """
-        my_pos = game_state.get_agent_state(self.index).get_position()
-        invaders = self.get_visible_invaders(game_state)
-        scared_ghosts = self.get_visible_scared_ghosts(game_state)
+        # Decide the goal based on current conditions:
+        # Scared -> start position.
+        # Visible invader -> chase it.
+        # Else -> patrol point.
+        inv = self.get_visible_invaders(game_state)
+        scared = self.is_scared(game_state)
+        if scared:
+            enemy = self.get_closest_enemy_position(game_state)
+            return self.start_position if enemy else self.start_position
+        if inv:
+            my_pos = self.get_current_position(game_state)
+            return min((p for _, p in inv), key=lambda p: self.get_maze_distance(my_pos, p))
+        return self.patrol_point
 
-        # 1. If we see any invaders, chase the closest one
-        if invaders:
-            return min([pos for _, pos in invaders], key=lambda p: self.get_maze_distance(my_pos, p))
-
-        # 2. If we see a scared ghost, run away.
-        #    We'll pick our start position as a safe spot, or any point far from the ghost.
-        if scared_ghosts:
-            # Running away: choose a position far from the closest scared ghost.
-            # Here, we simply pick our start as a safe spot. Another approach could be
-            # to find a spot maximizing distance from the ghost.
-            return self.start_position
-
-        # 3. If no enemies are visible, just return to start position or any defensive location.
-        return self.start_position
-
-    def calculate_heuristic(self, current_pos, goal_pos, closest_enemy_distance):
-        """
-        A heuristic for guiding A* search.
-        We'll primarily use the maze distance to the goal. We could incorporate
-        enemy proximity if desired, but as a defensive agent focusing on reaching
-        a goal (like chasing an invader), a straightforward distance-based heuristic
-        might suffice.
-        """
-        return self.get_maze_distance(current_pos, goal_pos)
+    def calculate_heuristic(self, game_state, cpos, gpos):
+        # Simple heuristic: just the maze distance.
+        return self.get_maze_distance(cpos, gpos)
 
     def choose_action(self, game_state):
-        """
-        Choose an action by:
-        1. Selecting a defensive goal based on current conditions.
-        2. Running A* to find a path to that goal.
-        3. Returning the first step of the best found path.
+        # Compute path via A* and take the first action.
+        edist = self.get_closest_enemy_distance(game_state)
+        goal = self.select_goal(game_state)
+        path = self.a_star_search(game_state, goal, edist)
+        return path[0] if path else Directions.STOP
 
-        If no path is found, do a fallback (e.g., stay put or return home).
-        """
-        my_pos = game_state.get_agent_state(self.index).get_position()
-        closest_enemy_distance = self.get_closest_enemy_distance(game_state)
-        chosen_goal = self.select_goal(game_state)
-
-        path = self.a_star_search(
-            game_state, my_pos, chosen_goal, closest_enemy_distance)
-
-        if path and len(path) > 0:
-            return path[0]
-        else:
-            # Fallback: If no path, just stop to avoid random movements
-            return Directions.STOP
-
-    def a_star_search(self, initial_game_state, start_pos, goal_pos, closest_enemy_distance):
-        """
-        Perform A* search to find a path from start_pos to goal_pos.
-        Similar to the OffensiveAStarAgent implementation.
-        """
-        expanded_nodes = set()
+    def a_star_search(self, init_state, goal, edist):
+        # A* search from current position to goal.
+        start = self.get_current_position(init_state)
+        expanded = set()
         frontier = util.PriorityQueue()
-        frontier.push((initial_game_state, start_pos, []), 0)
-        cost_so_far = {start_pos: 0}
-
+        frontier.push((init_state, start, []), 0)
+        cost = {start: 0}
         while not frontier.is_empty():
-            current_state, current_pos, path = frontier.pop()
-
-            if current_pos == goal_pos:
-                return path  # Goal reached
-
-            if current_pos in expanded_nodes:
+            st, pos, p = frontier.pop()
+            if pos == goal:
+                return p
+            if pos in expanded:
                 continue
-            expanded_nodes.add(current_pos)
-
-            for action in current_state.get_legal_actions(self.index):
-                if action == Directions.STOP:
+            expanded.add(pos)
+            for a in st.get_legal_actions(self.index):
+                if a == Directions.STOP:
                     continue
-
-                successor_state = current_state.generate_successor(
-                    self.index, action)
-                next_pos = successor_state.get_agent_state(
-                    self.index).get_position()
-                next_pos = nearest_point(next_pos)
-
-                new_cost = cost_so_far[current_pos] + 1  # uniform step cost
-                if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
-                    cost_so_far[next_pos] = new_cost
-                    new_path = path + [action]
-                    heuristic_value = self.calculate_heuristic(
-                        next_pos, goal_pos, closest_enemy_distance)
-                    priority = new_cost + heuristic_value
-                    frontier.push(
-                        (successor_state, next_pos, new_path), priority)
-
-        # No path found
+                succ = st.generate_successor(self.index, a)
+                npos = succ.get_agent_state(self.index).get_position()
+                npos = nearest_point(npos)
+                new_cost = cost[pos] + 1
+                if npos not in cost or new_cost < cost[npos]:
+                    cost[npos] = new_cost
+                    h = self.calculate_heuristic(succ, npos, goal)
+                    frontier.push((succ, npos, p + [a]), new_cost + h)
         return []
-
 ##########
 # Agents #
 ##########
